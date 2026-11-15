@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.main.json",
+  "compilerOptions": { "outDir": "dist-test", "noEmit": false },
+  "include": ["src/main/**/*", "src/shared/**/*"],
+  "exclude": ["src/main/main.ts", "src/main/menu.ts", "src/main/preload.ts", "src/main/dbLocation.ts"]
+}
