@@ -1,5 +1,5 @@
 import type { DashboardSummary, ValuedGame } from '../../shared/types';
-import { formatHours, formatMoney, formatPerHour } from '../../shared/value';
+import { formatBytes, formatDate, formatHours, formatMoney, formatPerHour } from '../../shared/value';
 
 interface Props {
   summary: DashboardSummary;
@@ -28,6 +28,7 @@ function GameList({ games, currency, empty }: { games: ValuedGame[]; currency: s
           <span className="sub">
             {formatHours(g.hours)} · {g.counted ? formatMoney(g.counted.cents, g.counted.currency) : 'price unknown'}
             {g.basis === 'estimate' ? ' (est.)' : ''}
+            {g.acquiredAt ? ` · Got it ${formatDate(g.acquiredAt)}` : ''}
           </span>
         </li>
       ))}
@@ -63,6 +64,7 @@ export default function Dashboard({ summary, hasGames, onOpenLibrary }: Props) {
           value={String(summary.neverPlayed.length)}
           note={summary.neverPlayedSpentCents ? `${formatMoney(summary.neverPlayedSpentCents, c)} spent on them` : undefined}
         />
+        {summary.installedCount > 0 && <Tile label="Installed" value={String(summary.installedCount)} note={`${formatBytes(summary.installedBytes)} on disk`} />}
       </section>
       <p className="estimate-note">
         Prices are estimates: the Steam price on the day each game came into your library, from IsThereAnyDeal. Free games, gifts and
@@ -87,6 +89,7 @@ export default function Dashboard({ summary, hasGames, onOpenLibrary }: Props) {
                 <li key={g.appId}>
                   <span className="name">{g.name}</span>
                   <span className="figure">{g.counted ? formatMoney(g.counted.cents, g.counted.currency) : '—'}</span>
+                  {g.acquiredAt ? <span className="sub">Got it {formatDate(g.acquiredAt)}</span> : null}
                 </li>
               ))}
             </ol>

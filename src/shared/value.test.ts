@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parsePriceInput, summarize, valueGame, formatHours } from './value';
+import { parsePriceInput, summarize, valueGame, formatHours, formatBytes, formatDate } from './value';
 import type { GameRow, PriceEstimate } from './types';
 
 function est(cents: number, over: Partial<PriceEstimate> = {}): PriceEstimate {
@@ -31,6 +31,10 @@ function game(over: Partial<GameRow>): GameRow {
     bundleSize: 1,
     estimate: null,
     manualPrice: null,
+    installed: false,
+    installDrive: null,
+    sizeOnDiskBytes: null,
+    favorite: false,
     ...over,
   };
 }
@@ -97,4 +101,27 @@ test('hours are shown in a readable unit', () => {
   assert.equal(formatHours(0.5), '30 min');
   assert.equal(formatHours(2.25), '2.3 h');
   assert.equal(formatHours(120), '120 h');
+});
+
+test('sizes on disk read like Steam shows them', () => {
+  assert.equal(formatBytes(0), '0 B');
+  assert.equal(formatBytes(512), '512 B');
+  assert.equal(formatBytes(1536), '1.5 KB');
+  assert.equal(formatBytes(45_200_000_000), '42.1 GB');
+  assert.equal(formatBytes(3 * 1024 ** 4), '3.0 TB');
+  assert.equal(formatBytes(-1), '—');
+});
+
+test('the summary counts installed games and their size', () => {
+  const s = summarize([
+    game({ appId: 1, installed: true, installDrive: 'D:', sizeOnDiskBytes: 1000 }),
+    game({ appId: 2, installed: true, sizeOnDiskBytes: null }),
+    game({ appId: 3 }),
+  ]);
+  assert.equal(s.installedCount, 2);
+  assert.equal(s.installedBytes, 1000);
+});
+
+test('a date is formatted from Unix seconds', () => {
+  assert.match(formatDate(Date.UTC(2021, 2, 3, 12) / 1000), /2021/);
 });

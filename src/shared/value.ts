@@ -113,6 +113,8 @@ export function summarize(rows: GameRow[]): DashboardSummary {
     neverPlayed,
     ranked,
     neverPlayedSpentCents,
+    installedCount: valued.filter((g) => g.installed).length,
+    installedBytes: valued.reduce((sum, g) => sum + (g.installed ? (g.sizeOnDiskBytes ?? 0) : 0), 0),
   };
 }
 
@@ -146,4 +148,23 @@ export function parsePriceInput(text: string): number | null {
   if (!/^\d+(\.\d{1,2})?$/.test(normalised)) return null;
   const [whole, frac = ''] = normalised.split('.');
   return Number(whole) * 100 + Number(frac.padEnd(2, '0'));
+}
+
+/** A size on disk the way Steam shows it: 1024-based, one decimal ("42.1 GB"). */
+export function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes < 0) return '—';
+  if (bytes < 1024) return `${Math.round(bytes)} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  return `${value.toFixed(1)} ${units[unit]}`;
+}
+
+/** A date from Unix seconds in the user's own format ("Mar 3, 2021"). */
+export function formatDate(unixSeconds: number): string {
+  return new Date(unixSeconds * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }

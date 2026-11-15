@@ -1,8 +1,9 @@
 import { useMemo, useState } from 'react';
 import type { GameRow, ValuedGame } from '../../shared/types';
-import { formatHours, formatMoney, formatPerHour, parsePriceInput, valueGame } from '../../shared/value';
+import { formatBytes, formatDate, formatHours, formatMoney, formatPerHour, parsePriceInput, valueGame } from '../../shared/value';
 
-type SortKey = 'name' | 'hours' | 'price' | 'perHour' | 'acquired';
+type SortKey = 'name' | 'hours' | 'price' | 'perHour' | 'acquired' | 'size';
+type Filter = 'all' | 'installed' | 'notInstalled' | 'favorites';
 
 interface Props {
   games: GameRow[];
@@ -25,6 +26,12 @@ function priceLabel(g: ValuedGame): string {
   if (g.basis === 'manual') return `${money} (yours)`;
   if (g.basis === 'estimate') return `${money} (est.)`;
   return money;
+}
+
+function installedLabel(g: ValuedGame): string {
+  if (!g.installed) return '—';
+  const parts = [g.installDrive, g.sizeOnDiskBytes != null ? formatBytes(g.sizeOnDiskBytes) : null].filter((p): p is string => Boolean(p));
+  return parts.length ? parts.join(' · ') : 'Installed';
 }
 
 function PriceEditor({ game, currency, onSave, onClose }: { game: ValuedGame; currency: string; onSave: (cents: number | null) => Promise<void>; onClose: () => void }) {
@@ -66,14 +73,27 @@ export default function Library({ games, currency, onSetManualPrice }: Props) {
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<SortKey>('perHour');
   const [descending, setDescending] = useState(false);
+  const [filterChoice, setFilterChoice] = useState<Filter>('all');
   const [editing, setEditing] = useState<number | null>(null);
   // Every game, valued the same way as the dashboard.
   const all = useMemo(() => games.map((g) => valueGame(g, currency)), [games, currency]);
 
+  const anyInstalled = useMemo(() => all.some((g) => g.installed), [all]);
+  const anyFavorite = useMemo(() => all.some((g) => g.favorite), [all]);
+  // A choice that stops being offered (after a sync) falls back to all games.
+  const filter: Filter =
+    (filterChoice === 'favorites' && !anyFavorite) || ((filterChoice === 'installed' || filterChoice === 'notInstalled') && !anyInstalled) ? 'all' : filterChoice;
+
   const rows = useMemo(() => {
     const list = [...all];
     const q = query.trim().toLowerCase();
-    const filtered = q ? list.filter((g) => g.name.toLowerCase().includes(q)) : list;
+    const byFilter = list.filter((g) => {
+      if (filter === 'installed') return g.installed;
+      if (filter === 'notInstalled') return !g.installed;
+      if (filter === 'favorites') return g.favorite;
+      return true;
+    });
+    const filtered = q ? byFilter.filter((g) => g.name.toLowerCase().includes(q)) : byFilter;
     const val = (g: ValuedGame): number | string => {
       switch (sort) {
         case 'name':
@@ -84,6 +104,8 @@ export default function Library({ games, currency, onSetManualPrice }: Props) {
           return g.counted?.cents ?? -1;
         case 'acquired':
           return g.acquiredAt ?? 0;
+        case 'size':
+          return g.sizeOnDiskBytes ?? -1;
         default:
           return g.costPerHour ?? Number.POSITIVE_INFINITY;
       }
@@ -95,7 +117,7 @@ export default function Library({ games, currency, onSetManualPrice }: Props) {
       return descending ? -cmp : cmp;
     });
     return filtered;
-  }, [all, query, sort, descending]);
+  }, [all, query, filter, sort, descending]);
 
   const header = (key: SortKey, label: string) => (
     <th>
@@ -105,7 +127,7 @@ export default function Library({ games, currency, onSetManualPrice }: Props) {
           if (sort === key) setDescending(!descending);
           else {
             setSort(key);
-            setDescending(key === 'hours' || key === 'price');
+            setDescending(key === 'hours' || key === 'price' || key === 'size');
           }
         }}
       >
@@ -119,6 +141,14 @@ export default function Library({ games, currency, onSetManualPrice }: Props) {
     <section className="panel">
       <div className="toolbar">
         <input className="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search games" aria-label="Search games" />
+        {(anyInstalled || anyFavorite) && (
+          <select value={filter} onChange={(e) => setFilterChoice(e.target.value as Filter)} aria-label="Show games">
+            <option value="all">All games</option>
+            {anyInstalled && <option value="installed">Installed</option>}
+            {anyInstalled && <option value="notInstalled">Not installed</option>}
+            {anyFavorite && <option value="favorites">Favourites</option>}
+          </select>
+        )}
         <span className="muted">{rows.length} games</span>
       </div>
       <table className="library">
@@ -129,6 +159,7 @@ export default function Library({ games, currency, onSetManualPrice }: Props) {
             {header('price', 'Price')}
             {header('perHour', 'Per hour')}
             {header('acquired', 'Got it')}
+            {anyInstalled && header('size', 'Installed')}
             <th>Notes</th>
             <th />
           </tr>
@@ -145,8 +176,9 @@ export default function Library({ games, currency, onSetManualPrice }: Props) {
               <td>{priceLabel(g)}</td>
               <td>{formatPerHour(g.costPerHour, g.counted?.currency ?? currency)}</td>
               <td>
-                {g.acquiredAt ? new Date(g.acquiredAt * 1000).toLocaleDateString() : '—'} <span className="muted">{KIND_LABEL[g.acquisition]}</span>
+                {g.acquiredAt ? formatDate(g.acquiredAt) : '—'} <span className="muted">{KIND_LABEL[g.acquisition]}</span>
               </td>
+              {anyInstalled && <td>{installedLabel(g)}</td>}
               <td className="flags">
                 {g.flags.map((f) => (
                   <span key={f} className="flag">

@@ -37,6 +37,11 @@ contextBridge.exposeInMainWorld('playtimeRoi', {
     get: () => ipcRenderer.invoke('settings:get'),
     setCountry: (country: string) => ipcRenderer.invoke('settings:setCountry', country),
   },
+  steamFolder: {
+    get: () => ipcRenderer.invoke('steamFolder:get'),
+    browse: () => ipcRenderer.invoke('steamFolder:browse'),
+    set: (folder: string | null) => ipcRenderer.invoke('steamFolder:set', folder),
+  },
   dbLocation: {
     get: () => ipcRenderer.invoke('dbLocation:get'),
     browseExisting: () => ipcRenderer.invoke('dbLocation:browseExisting'),
