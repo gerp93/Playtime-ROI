@@ -46,6 +46,25 @@ test('a refresh-token sign-in sends only the token', async () => {
   assert.deepEqual(user.logOns, [{ refreshToken: 'saved' }]);
 });
 
+test('the web session arrives after sign-in, and is forgotten when the session closes', async () => {
+  const user = new FakeSteamUser({ onLogOn: (c) => c.succeed(), webCookies: ['steamLoginSecure=abc', 'sessionid=sid1'] });
+  const { s } = session(user);
+  await s.signIn({ refreshToken: 'saved' });
+  const web = await s.webSession();
+  assert.equal(web.sessionId, 'fake-session-id');
+  assert.deepEqual(web.cookies, ['steamLoginSecure=abc', 'sessionid=sid1']);
+  assert.equal(await s.webSession(), web, 'a second ask gets the same one');
+  s.close();
+  await assert.rejects(s.webSession(5), /web session/, 'nothing is kept after close');
+});
+
+test('a web session that never comes is an error, not a hang', async () => {
+  const user = new FakeSteamUser({ onLogOn: (c) => c.succeed(), webCookies: false });
+  const { s } = session(user);
+  await s.signIn({ refreshToken: 'saved' });
+  await assert.rejects(s.webSession(20), /did not give a web session/);
+});
+
 test('a wrong password is an auth error; a dropped connection is not', async () => {
   const bad = new FakeSteamUser({ onLogOn: (c) => c.emit('error', Object.assign(new Error('InvalidPassword'), { eresult: 5 })) });
   await assert.rejects(session(bad).s.signIn({ accountName: 'a', password: 'b' }), (err: unknown) => err instanceof SteamAuthError && err.eresult === 5);

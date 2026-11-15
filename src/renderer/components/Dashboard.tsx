@@ -27,7 +27,7 @@ function GameList({ games, currency, empty }: { games: ValuedGame[]; currency: s
           <span className="figure">{formatPerHour(g.costPerHour, currency)}</span>
           <span className="sub">
             {formatHours(g.hours)} · {g.counted ? formatMoney(g.counted.cents, g.counted.currency) : 'price unknown'}
-            {g.basis === 'estimate' ? ' (est.)' : ''}
+            {g.basis === 'estimate' ? ' (est.)' : g.basis === 'receipt' ? ' (paid)' : ''}
             {g.acquiredAt ? ` · Got it ${formatDate(g.acquiredAt)}` : ''}
           </span>
         </li>
@@ -56,7 +56,7 @@ export default function Dashboard({ summary, hasGames, onOpenLibrary }: Props) {
   return (
     <>
       <section className="tiles">
-        <Tile label="Total spent" value={formatMoney(summary.totalSpentCents, c)} note={notes.length ? `Leaves out ${notes.join(' and ')}` : 'Mostly estimates'} />
+        <Tile label="Total spent" value={formatMoney(summary.totalSpentCents, c)} note={notes.length ? `Leaves out ${notes.join(' and ')}` : summary.receiptCount ? `${summary.receiptCount} from receipts` : 'Mostly estimates'} />
         <Tile label="Cost per hour" value={formatPerHour(summary.overallCostPerHour, c)} note={`${formatHours(summary.totalHours)} played`} />
         <Tile label="Games" value={String(summary.gameCount)} note={`${summary.playedCount} played`} />
         <Tile
@@ -67,8 +67,13 @@ export default function Dashboard({ summary, hasGames, onOpenLibrary }: Props) {
         {summary.installedCount > 0 && <Tile label="Installed" value={String(summary.installedCount)} note={`${formatBytes(summary.installedBytes)} on disk`} />}
       </section>
       <p className="estimate-note">
-        Prices are estimates: the Steam price on the day each game came into your library, from IsThereAnyDeal. Free games, gifts and
-        family sharing count as nothing. Set your own price for any game in the Library.
+        {summary.receiptCount > 0
+          ? `${summary.receiptCount} games use what Steam's purchase history says you were charged, tax included. `
+          : ''}
+        {summary.estimateCount > 0
+          ? `${summary.estimateCount} are estimates: the Steam price on the day each game came into your library, from IsThereAnyDeal. `
+          : ''}
+        Free games, gifts and family sharing count as nothing. Set your own price for any game in the Library.
       </p>
       <div className="columns">
         <section className="panel">

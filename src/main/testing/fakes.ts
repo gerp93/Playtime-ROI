@@ -12,6 +12,7 @@ export interface Call {
   url: string;
   method: string;
   body?: string;
+  headers?: Record<string, string>;
 }
 
 export type Responder = (call: Call) => { status?: number; body?: unknown; headers?: Record<string, string> } | Error;
@@ -19,8 +20,8 @@ export type Responder = (call: Call) => { status?: number; body?: unknown; heade
 /** A fetch that answers from a function and records every call. */
 export function fakeFetch(respond: Responder): FetchLike & { calls: Call[] } {
   const calls: Call[] = [];
-  const fn = (async (url: string, init?: { method?: string; body?: string }) => {
-    const call = { url, method: init?.method ?? 'GET', body: init?.body };
+  const fn = (async (url: string, init?: { method?: string; body?: string; headers?: Record<string, string> }) => {
+    const call = { url, method: init?.method ?? 'GET', body: init?.body, headers: init?.headers };
     calls.push(call);
     const r = respond(call);
     if (r instanceof Error) throw r;
@@ -42,6 +43,43 @@ export function fakeFetch(respond: Responder): FetchLike & { calls: Call[] } {
 }
 
 export const noSleep = async () => undefined;
+
+export interface HistoryRowSpec {
+  id: string;
+  date: string;
+  items: string[];
+  type?: string;
+  payment?: string;
+  /** "$59.99", or ["-32%", "$34.99", "$23.62"] for a discounted price. */
+  base?: string | [string, string, string];
+  tax?: string;
+  total: string;
+}
+
+/** A purchase-history row the way Steam writes it (whitespace and attribute order as on the real page). */
+export function historyRow(r: HistoryRowSpec): string {
+  const base = Array.isArray(r.base)
+    ? `<div class="wht_base_price_discounted"><div class="wht_discount_pct">${r.base[0]}</div><div><span class="wht_original_price">${r.base[1]}</span> <span class="wht_discounted_price">${r.base[2]}</span></div></div>`
+    : (r.base ?? '');
+  const items = r.items.map((i) => `<div style="clear: both">\n\t\t\t${i}\t\t\t\t\t\t\t\t\t\t\t</div>`).join('\n');
+  return `<tr data-panel="{&quot;focusable&quot;:true,&quot;clickOnActivate&quot;:true}" role="button" class="wallet_table_row " onclick="location.href='https://help.steampowered.com/en/wizard/HelpWithTransaction?transid=${r.id}'">
+  <td class="wht_date">${r.date}</td>
+  <td data-tooltip-text="Click to get help with this purchase" class="wht_items " "="" aria-describedby="tooltip-3">${items}</td>
+  <td class="wht_type "><div>${r.type ?? 'Purchase'}</div><div class="wth_payment">${r.payment ?? 'Visa **11'}</div></td>
+  <td class="wht_base_price">${base}</td>
+  <td class="wht_tax">${r.tax ?? ''}</td>
+  <td class="wht_shipping"></td>
+  <td class="wht_total ">${r.total}</td>
+  <td class="wht_wallet_change"></td><td class="wht_wallet_balance"></td>
+</tr>`;
+}
+
+/** The purchase-history page around some rows; `cursor` is what the page's script holds for "Load More". */
+export function historyPage(rows: string[], cursor = 'null'): string {
+  return `<html><body><table class="wallet_history_table"><thead><tr><th class="wht_date">Date</th></tr></thead><tbody>${rows.join('\n')}
+<tr id="more_history" style="display: none"></tr></tbody></table>
+<script type="text/javascript">var g_historyCursor = ${cursor};</script></body></html>`;
+}
 
 /** Reversible "encryption" so tests can check nothing is stored in plain text. */
 export function fakeSafeStorage(available = true): SafeStorageLike {
@@ -65,7 +103,13 @@ export interface FakeSteamScript {
   onLogOn: (client: FakeSteamUser, details: Record<string, unknown>) => void;
   licenses?: SteamLicense[];
   packages?: Record<number, unknown>;
+  /** The web cookies Steam hands out after sign-in; false for none (the web session never arrives). */
+  webCookies?: string[] | false;
 }
+
+/** The web session id a fake sign-in produces. */
+export const FAKE_WEB_SESSION_ID = 'fake-session-id';
+export const FAKE_LOGIN_COOKIE = 'fake-login-secret';
 
 export class FakeSteamUser extends EventEmitter implements SteamUserLike {
   steamID: { getSteamID64(): string; accountid: number } | null = null;
@@ -105,6 +149,9 @@ export class FakeSteamUser extends EventEmitter implements SteamUserLike {
     setImmediate(() => {
       this.licenses = this.script.licenses ?? [];
       this.emit('licenses', this.licenses);
+      if (this.script.webCookies !== false) {
+        this.emit('webSession', FAKE_WEB_SESSION_ID, this.script.webCookies ?? [`steamLoginSecure=${FAKE_LOGIN_COOKIE}`, `sessionid=${FAKE_WEB_SESSION_ID}`]);
+      }
     });
   }
 }

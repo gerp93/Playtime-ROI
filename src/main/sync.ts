@@ -10,6 +10,8 @@ import { ItadClient, ItadKeyRejectedError } from './itad';
 import type { FetchLike, Sleep } from './http';
 import { acquisitionsByApp } from '../shared/licenses';
 import { priceOnDate } from '../shared/priceHistory';
+import { priceFromReceipts } from '../shared/purchaseHistory';
+import { fetchPurchaseHistory } from './steam/purchaseHistory';
 import type { SyncProgress, SyncResult } from '../shared/types';
 import type { LocalSteamInfo } from './steam/localFiles';
 
@@ -90,12 +92,38 @@ export async function readLicenses(deps: SyncDeps, session: SteamSession, accoun
   deps.store.replaceAcquisitions(byApp.values());
 }
 
+/**
+ * Reads the purchase history through the open session and saves any rows not
+ * seen before. Returns a note for the sync message when it could not, and never
+ * throws: the receipts are an upgrade over the estimates, not a requirement.
+ */
+export async function readReceipts(deps: SyncDeps, session: SteamSession): Promise<string> {
+  deps.onProgress?.({ phase: 'reading-receipts', message: 'Reading your Steam purchase history…' });
+  try {
+    const web = await session.webSession();
+    const rows = await fetchPurchaseHistory(deps.fetch, web, deps.store.knownReceiptIds(), { sleep: deps.sleep });
+    deps.store.saveReceipts(rows);
+    return '';
+  } catch (err) {
+    return ` Receipt prices were not updated: ${err instanceof Error ? err.message : 'the purchase history could not be read.'}`;
+  }
+}
+
+/** Matches the saved receipts to the library and saves what each game was paid. Returns how many games have a receipt price. */
+export function applyReceipts(store: Store, country: string): number {
+  const prices = priceFromReceipts(store.listReceipts(), store.listReceiptGames(), country);
+  store.replaceReceiptPrices(prices);
+  return prices.length;
+}
+
 export async function priceGames(deps: SyncDeps, itadKey: string): Promise<number> {
   const { store } = deps;
   const country = getCountry(store);
   const now = deps.now();
   const todo = store
     .listGames()
+    // A game with a receipt of its own is not looked up; one that shares a receipt still is, since its regular price splits the receipt fairly.
+    .filter((g) => !(g.receipt && !g.receipt.split))
     .filter((g) => g.acquiredAt != null && !UNPRICED.has(g.acquisition))
     .filter((g) => needsPricing(store.getEstimate(g.appId), g.acquiredAt as number, country, now));
   if (todo.length === 0) return 0;
@@ -150,6 +178,7 @@ export async function runSync(deps: SyncDeps, signedInSession?: { session: Steam
   let session = signedInSession?.session ?? null;
   let account = signedInSession?.account ?? null;
   let licenseNote = '';
+  let receiptNote = '';
   if (!session) {
     const token = secrets.get('steamRefreshToken');
     if (!token) {
@@ -196,12 +225,22 @@ export async function runSync(deps: SyncDeps, signedInSession?: { session: Steam
       } catch (err) {
         licenseNote = ` ${err instanceof Error ? err.message : 'Could not read the licenses.'} Purchase dates were not updated.`;
       }
+      // 3. What was actually charged, from Steam's purchase history (same sign-in).
+      receiptNote = await readReceipts(deps, session);
     }
   } finally {
     session?.close();
   }
 
-  // 3. Prices for what is new or changed.
+  // Match the saved receipts to the library (also without a sign-in, from what was saved before).
+  const country = getCountry(store);
+  try {
+    applyReceipts(store, country);
+  } catch {
+    receiptNote ||= ' Receipt prices could not be matched to your games.';
+  }
+
+  // 4. Prices for what is new or changed, from the estimate service, for games with no receipt.
   const gameCount = store.listGames().length;
   const itadKey = secrets.get('itadApiKey');
   let priced = 0;
@@ -211,12 +250,15 @@ export async function runSync(deps: SyncDeps, signedInSession?: { session: Steam
   } else {
     try {
       priced = await priceGames(deps, itadKey);
+      // Regular prices just found help share out any receipt that paid for several things.
+      if (priced > 0) applyReceipts(store, country);
     } catch (err) {
       priceNote = ` ${err instanceof Error ? err.message : 'Pricing failed.'}`;
     }
   }
 
   store.setMeta(META_LAST_SYNC, String(deps.now()));
-  const message = `Synced ${gameCount} games${priced ? `, priced ${priced}` : ''}.${licenseNote}${priceNote}`;
+  const fromReceipts = store.listGames().filter((g) => g.receipt).length;
+  const message = `Synced ${gameCount} games${fromReceipts ? `, ${fromReceipts} priced from receipts` : ''}${priced ? `, ${priced} estimated` : ''}.${licenseNote}${receiptNote}${priceNote}`;
   return result(deps, true, 'done', message, gameCount, priced);
 }

@@ -43,6 +43,18 @@ export interface PriceEstimate {
   error: string | null;
 }
 
+/** What Steam's purchase history says a game cost: the amount actually charged. */
+export interface ReceiptInfo {
+  /** What was paid for this game, tax included. */
+  price: Money;
+  /** Unix seconds (00:00 UTC) of the receipt's day. */
+  date: number;
+  /** The receipt also paid for other things, so this is the game's share of it. */
+  split: boolean;
+  /** How many items that share was divided over. */
+  itemCount: number;
+}
+
 /** One game as the dashboard sees it. */
 export interface GameRow {
   appId: number;
@@ -61,7 +73,9 @@ export interface GameRow {
   /** How many games of the library that license brought in. */
   bundleSize: number;
   estimate: PriceEstimate | null;
-  /** A price the user typed in, which always wins over the estimate. */
+  /** What the account's purchase history says was paid; wins over the estimate. */
+  receipt: ReceiptInfo | null;
+  /** A price the user typed in, which always wins over everything else. */
   manualPrice: Money | null;
   /** True when the game is fully installed in a Steam library on this computer. */
   installed: boolean;
@@ -74,6 +88,7 @@ export interface GameRow {
 
 export type CountedPriceBasis =
   | 'manual' // the user's own figure
+  | 'receipt' // what Steam's purchase history says was charged
   | 'estimate' // ITAD's price on the purchase date
   | 'zero' // free, gift or family: counted as costing nothing
   | 'unknown'; // no figure at all, left out of totals
@@ -107,6 +122,10 @@ export interface DashboardSummary {
   ranked: ValuedGame[];
   /** Cents of counted spend on games never played. */
   neverPlayedSpentCents: number;
+  /** Games whose price is what Steam's purchase history says was charged. */
+  receiptCount: number;
+  /** Games whose price is an ITAD estimate. */
+  estimateCount: number;
   /** Games installed on this computer, and their size together; 0 without a Steam folder. */
   installedCount: number;
   installedBytes: number;
@@ -116,6 +135,7 @@ export type SyncPhase =
   | 'idle'
   | 'signing-in'
   | 'reading-licenses'
+  | 'reading-receipts'
   | 'reading-library'
   | 'pricing'
   | 'done'

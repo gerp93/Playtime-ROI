@@ -4,9 +4,10 @@
 import { DatabaseSync } from 'node:sqlite';
 import * as fs from 'fs';
 import * as path from 'path';
-import type { AcquisitionKind, GameRow, Money, PriceEstimate, PriceMatch, PriceStatus } from '../../shared/types';
+import type { AcquisitionKind, GameRow, Money, PriceEstimate, PriceMatch, PriceStatus, ReceiptInfo } from '../../shared/types';
 import type { AppAcquisition } from '../../shared/licenses';
 import { installDriveOf, LocalSteamInfo } from '../steam/localFiles';
+import type { HistoryRow, ReceiptGame, ReceiptPrice } from '../../shared/purchaseHistory';
 
 export interface OwnedGame {
   appId: number;
@@ -54,6 +55,27 @@ CREATE TABLE IF NOT EXISTS price_estimates (
   looked_up_at INTEGER NOT NULL,
   error TEXT
 );
+CREATE TABLE IF NOT EXISTS receipts (
+  trans_id TEXT PRIMARY KEY,
+  date INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  type_label TEXT NOT NULL,
+  items TEXT NOT NULL,
+  list_cents INTEGER,
+  discount_pct INTEGER,
+  tax_cents INTEGER,
+  total_cents INTEGER,
+  symbol TEXT
+);
+CREATE TABLE IF NOT EXISTS receipt_prices (
+  app_id INTEGER PRIMARY KEY,
+  trans_id TEXT NOT NULL,
+  date INTEGER NOT NULL,
+  cents INTEGER NOT NULL,
+  currency TEXT NOT NULL,
+  split INTEGER NOT NULL DEFAULT 0,
+  item_count INTEGER NOT NULL DEFAULT 1
+);
 CREATE TABLE IF NOT EXISTS manual_prices (
   app_id INTEGER PRIMARY KEY,
   cents INTEGER NOT NULL,
@@ -87,6 +109,12 @@ function num(value: unknown): number | null {
 function money(cents: unknown, currency: unknown): Money | null {
   const c = num(cents);
   return c != null && typeof currency === 'string' ? { cents: c, currency } : null;
+}
+
+function receiptOf(row: Row): ReceiptInfo | null {
+  const price = money(row.receipt_cents, row.receipt_currency);
+  if (!price) return null;
+  return { price, date: Number(row.receipt_date), split: Number(row.receipt_split) === 1, itemCount: Number(row.receipt_items ?? 1) };
 }
 
 export class Store {
@@ -201,6 +229,61 @@ export class Store {
     return Number(row.n) > 0;
   }
 
+  /** Saves purchase-history rows; one already saved (same transaction) is left as it was. */
+  saveReceipts(rows: HistoryRow[]): void {
+    this.transaction(() => {
+      const insert = this.db.prepare(
+        `INSERT OR IGNORE INTO receipts (trans_id, date, kind, type_label, items, list_cents, discount_pct, tax_cents, total_cents, symbol)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      );
+      for (const r of rows) {
+        insert.run(r.transId, r.date, r.kind, r.typeLabel, JSON.stringify(r.items), r.listCents, r.discountPct, r.taxCents, r.totalCents, r.symbol);
+      }
+    });
+  }
+
+  knownReceiptIds(): Set<string> {
+    const rows = this.db.prepare('SELECT trans_id FROM receipts').all() as Row[];
+    return new Set(rows.map((r) => String(r.trans_id)));
+  }
+
+  listReceipts(): HistoryRow[] {
+    const rows = this.db.prepare('SELECT * FROM receipts ORDER BY date, trans_id').all() as Row[];
+    return rows.map((r) => ({
+      transId: String(r.trans_id),
+      date: Number(r.date),
+      kind: r.kind as HistoryRow['kind'],
+      typeLabel: String(r.type_label),
+      items: JSON.parse(String(r.items)) as string[],
+      listCents: num(r.list_cents),
+      discountPct: num(r.discount_pct),
+      taxCents: num(r.tax_cents),
+      totalCents: num(r.total_cents),
+      symbol: (r.symbol as string | null) ?? null,
+    }));
+  }
+
+  /** Replaces which game each receipt paid for; matching is redone from the saved receipts every sync. */
+  replaceReceiptPrices(prices: ReceiptPrice[]): void {
+    this.transaction(() => {
+      this.db.exec('DELETE FROM receipt_prices');
+      const insert = this.db.prepare(
+        'INSERT INTO receipt_prices (app_id, trans_id, date, cents, currency, split, item_count) VALUES (?, ?, ?, ?, ?, ?, ?)'
+      );
+      for (const p of prices) insert.run(p.appId, p.transId, p.date, p.price.cents, p.price.currency, p.split ? 1 : 0, p.itemCount);
+    });
+  }
+
+  /** The games the receipts are matched against, with the date and regular price that help the match. */
+  listReceiptGames(): ReceiptGame[] {
+    return this.listGames().map((g) => ({
+      appId: g.appId,
+      name: g.name,
+      acquiredAt: g.acquiredAt,
+      regularCents: g.estimate?.status === 'ok' ? (g.estimate.regular?.cents ?? null) : null,
+    }));
+  }
+
   getEstimate(appId: number): StoredEstimate | null {
     const row = this.db.prepare('SELECT * FROM price_estimates WHERE app_id = ?').get(appId) as Row | undefined;
     return row ? this.toEstimate(row) : null;
@@ -258,8 +341,11 @@ export class Store {
            m.cents AS manual_cents, m.currency AS manual_currency,
            p.app_id AS p_app_id, p.for_date, p.country, p.status, p.price_cents, p.price_currency, p.regular_cents,
            p.regular_currency, p.cut, p.recorded_at, p.match, p.looked_up_at, p.error,
-           i.library_path, i.size_on_disk, COALESCE(f.favorite, 0) AS favorite
+           i.library_path, i.size_on_disk, COALESCE(f.favorite, 0) AS favorite,
+           r.cents AS receipt_cents, r.currency AS receipt_currency, r.date AS receipt_date, r.split AS receipt_split,
+           r.item_count AS receipt_items
          FROM games g
+         LEFT JOIN receipt_prices r ON r.app_id = g.app_id
          LEFT JOIN acquisitions a ON a.app_id = g.app_id
          LEFT JOIN manual_prices m ON m.app_id = g.app_id
          LEFT JOIN price_estimates p ON p.app_id = g.app_id
@@ -281,6 +367,7 @@ export class Store {
       bundle: Number(row.bundle ?? 0) === 1,
       bundleSize: Number(row.bundle_size ?? 1),
       estimate: row.p_app_id == null ? null : this.toEstimate(row),
+      receipt: receiptOf(row),
       manualPrice: money(row.manual_cents, row.manual_currency),
       installed: row.library_path != null,
       installDrive: row.library_path == null ? null : installDriveOf(String(row.library_path)),

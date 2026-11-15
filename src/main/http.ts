@@ -27,13 +27,35 @@ export const realSleep: Sleep = (ms) => new Promise((resolve) => setTimeout(reso
  * Sends a request, waiting and trying again (up to `retries` times) when the
  * service says it is busy (429) or fails on its side (5xx).
  */
-export async function requestJson(
+export function requestJson(
   fetchImpl: FetchLike,
   service: string,
   url: string,
   init: Parameters<FetchLike>[1] = {},
   opts: { retries?: number; sleep?: Sleep; timeoutMs?: number } = {}
 ): Promise<unknown> {
+  return request(fetchImpl, service, url, init, opts, (response) => response.json());
+}
+
+/** The same, for an answer that is text (a web page). */
+export function requestText(
+  fetchImpl: FetchLike,
+  service: string,
+  url: string,
+  init: Parameters<FetchLike>[1] = {},
+  opts: { retries?: number; sleep?: Sleep; timeoutMs?: number } = {}
+): Promise<string> {
+  return request(fetchImpl, service, url, init, opts, (response) => response.text());
+}
+
+async function request<T>(
+  fetchImpl: FetchLike,
+  service: string,
+  url: string,
+  init: Parameters<FetchLike>[1],
+  opts: { retries?: number; sleep?: Sleep; timeoutMs?: number },
+  read: (response: Awaited<ReturnType<FetchLike>>) => Promise<T>
+): Promise<T> {
   const retries = opts.retries ?? 3;
   const sleep = opts.sleep ?? realSleep;
   for (let attempt = 0; ; attempt++) {
@@ -53,7 +75,7 @@ export async function requestJson(
     if (timer) clearTimeout(timer);
     if (response.ok) {
       try {
-        return await response.json();
+        return await read(response);
       } catch {
         throw new Error(`${service} sent an answer that could not be read.`);
       }

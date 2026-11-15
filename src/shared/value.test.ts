@@ -30,6 +30,7 @@ function game(over: Partial<GameRow>): GameRow {
     bundle: false,
     bundleSize: 1,
     estimate: null,
+    receipt: null,
     manualPrice: null,
     installed: false,
     installDrive: null,
@@ -44,6 +45,26 @@ test('cost per hour uses the manual price first, then the estimate', () => {
   const manual = valueGame(game({ estimate: est(2000), manualPrice: { cents: 500, currency: 'USD' } }), 'USD');
   assert.equal(manual.basis, 'manual');
   assert.equal(manual.costPerHour, 0.5);
+});
+
+test('what the receipt says was paid beats the estimate, but never the price you typed', () => {
+  const receipt = { price: { cents: 1250, currency: 'USD' }, date: 100, split: false, itemCount: 1 };
+  const g = valueGame(game({ estimate: est(2000, { match: 'after' }), receipt, bundle: true, bundleSize: 3, acquisition: 'key' }), 'USD');
+  assert.equal(g.basis, 'receipt');
+  assert.equal(g.counted?.cents, 1250);
+  assert.deepEqual(g.flags, [], 'a receipt needs none of the estimate caveats');
+  assert.equal(valueGame(game({ receipt, manualPrice: { cents: 300, currency: 'USD' } }), 'USD').basis, 'manual');
+  // A game Steam says was bought is not counted as free because its license looks like a gift.
+  assert.equal(valueGame(game({ receipt, acquisition: 'gift' }), 'USD').counted?.cents, 1250);
+});
+
+test('a share of a bigger receipt is flagged, and the summary counts receipts and estimates', () => {
+  const shared = { price: { cents: 500, currency: 'USD' }, date: 100, split: true, itemCount: 3 };
+  assert.deepEqual(valueGame(game({ receipt: shared }), 'USD').flags, ['Shared receipt: its share of 3 items']);
+  const s = summarize([game({ appId: 1, receipt: shared }), game({ appId: 2, estimate: est(1000) }), game({ appId: 3, estimate: est(2000) })]);
+  assert.equal(s.receiptCount, 1);
+  assert.equal(s.estimateCount, 2);
+  assert.equal(s.totalSpentCents, 3500);
 });
 
 test('free, gift and family games count as costing nothing and are flagged', () => {

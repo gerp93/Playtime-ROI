@@ -24,6 +24,7 @@ function priceLabel(g: ValuedGame): string {
   if (!g.counted) return '—';
   const money = formatMoney(g.counted.cents, g.counted.currency);
   if (g.basis === 'manual') return `${money} (yours)`;
+  if (g.basis === 'receipt') return g.receipt?.split ? `${money} (paid, share)` : `${money} (paid)`;
   if (g.basis === 'estimate') return `${money} (est.)`;
   return money;
 }
