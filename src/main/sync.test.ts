@@ -5,7 +5,7 @@ import { Store } from './database/store';
 import { SecretStore } from './secrets';
 import { SteamSession } from './steam/steamClient';
 import { META_STEAM_FOLDER, META_STEAM_ID, META_STEAM_STATUS, needsPricing, runSync, SyncDeps } from './sync';
-import { Call, fakeFetch, fakeSafeStorage, FakeSteamScript, FakeSteamUser, noSleep, tempDir } from './testing/fakes';
+import { Call, FAKE_LOGIN_COOKIE, fakeFetch, fakeSafeStorage, FakeSteamScript, FakeSteamUser, historyPage, historyRow, noSleep, tempDir } from './testing/fakes';
 import { summarize } from '../shared/value';
 import type { SyncProgress } from '../shared/types';
 
@@ -41,7 +41,9 @@ interface Harness {
   clock: { now: number };
 }
 
-function harness(opts: { library?: unknown; itad?: (call: Call) => ReturnType<Parameters<typeof fakeFetch>[0]>; script?: FakeSteamScript } = {}): Harness {
+type Respond = (call: Call) => ReturnType<Parameters<typeof fakeFetch>[0]>;
+
+function harness(opts: { library?: unknown; itad?: Respond; history?: Respond; script?: FakeSteamScript } = {}): Harness {
   const dir = tempDir();
   const store = new Store(path.join(dir, 'sync.db'));
   const secrets = SecretStore.inDirectory(dir, fakeSafeStorage());
@@ -76,6 +78,7 @@ function harness(opts: { library?: unknown; itad?: (call: Call) => ReturnType<Pa
   const fetch = fakeFetch((call) => {
     if (call.url.startsWith('https://api.steampowered.com/')) return { body: library };
     if (call.url.startsWith('https://api.isthereanydeal.com/')) return itad(call);
+    if (call.url.startsWith('https://store.steampowered.com/account/')) return (opts.history ?? (() => ({ body: historyPage([]) })))(call);
     return { status: 404 };
   });
   const deps: SyncDeps = {
@@ -221,6 +224,127 @@ test('a found-nothing estimate is retried only after a month, and a new date rep
   assert.equal(needsPricing({ ...base, status: 'ok', lookedUpAt: 0 }, 100, 'US', 400 * DAY), false);
   assert.equal(needsPricing({ ...base, status: 'ok', lookedUpAt: 0 }, 101, 'US', 0), true);
   assert.equal(needsPricing({ ...base, status: 'ok', lookedUpAt: 0 }, 100, 'GB', 0), true);
+});
+
+function withKeys(h: Harness): void {
+  h.secrets.set('steamWebApiKey', 'WEBKEY');
+  h.secrets.set('itadApiKey', 'ITADKEY');
+  h.secrets.set('steamRefreshToken', 'old-token');
+}
+
+/** Bought Game (app 10) came in on 2021-06-01; this is the receipt for it. */
+const boughtGameReceipt = (total = '$12.34') => historyRow({ id: '501', date: 'Jun 1, 2021', items: ['Bought Game'], base: '$14.99', tax: '$0.99', total });
+
+test('a game with a receipt costs what the receipt says, and is not looked up as an estimate', async () => {
+  const h = harness({ history: () => ({ body: historyPage([boughtGameReceipt()]) }) });
+  withKeys(h);
+  const result = await runSync(h.deps);
+  assert.equal(result.ok, true, result.message);
+  assert.equal(result.pricesLookedUp, 1, 'only the keyed game is estimated');
+  assert.match(result.message, /1 priced from receipts/);
+
+  const bought = h.store.listGames().find((g) => g.appId === 10);
+  assert.deepEqual(bought?.receipt?.price, { cents: 1234, currency: 'USD' });
+  assert.equal(bought?.receipt?.split, false);
+  assert.equal(h.store.getEstimate(10), null, 'ITAD was not asked about it');
+  assert.equal(h.fetch.calls.some((c) => c.url.includes('isthereanydeal') && c.url.includes('itad-10')), false);
+
+  const summary = summarize(h.store.listGames());
+  const valued = [...summary.ranked, ...summary.neverPlayed].find((g) => g.appId === 10);
+  assert.equal(valued?.basis, 'receipt');
+  assert.equal(summary.totalSpentCents, 1234 + 2999);
+  assert.equal(summary.receiptCount, 1);
+});
+
+test('the receipts are read with the web cookies, once, and the cookies are never shown or saved', async () => {
+  const h = harness({ history: () => ({ body: historyPage([boughtGameReceipt()]) }) });
+  withKeys(h);
+  const result = await runSync(h.deps);
+  const history = h.fetch.calls.filter((c) => c.url.startsWith('https://store.steampowered.com/'));
+  assert.equal(history.length, 1);
+  assert.match(history[0].headers?.Cookie ?? '', new RegExp(FAKE_LOGIN_COOKIE));
+  const shown = JSON.stringify([h.progress, result]);
+  assert.equal(shown.includes(FAKE_LOGIN_COOKIE), false);
+  assert.ok(h.progress.some((p) => p.phase === 'reading-receipts'));
+  assert.equal(JSON.stringify(h.store.listReceipts()).includes(FAKE_LOGIN_COOKIE), false);
+  assert.equal(h.users[0].loggedOff, 1);
+});
+
+test('a later sync keeps the saved receipts and does not page back through them', async () => {
+  let pages = 0;
+  const h = harness({
+    history: (call) => {
+      pages += 1;
+      if (call.method === 'POST') return { body: { success: 1, html: historyRow({ id: '400', date: 'Jan 5, 2020', items: ['Old Thing'], total: '$1.00' }), cursor: null } };
+      return { body: historyPage([boughtGameReceipt()], '{"wcnt":"1"}') };
+    },
+  });
+  withKeys(h);
+  await runSync(h.deps);
+  assert.equal(pages, 2, 'the first sync reads both pages');
+  assert.equal(h.store.listReceipts().length, 2);
+
+  pages = 0;
+  const again = await runSync(h.deps);
+  assert.equal(again.ok, true);
+  assert.equal(pages, 1, 'the second stops at the receipt it already has');
+  assert.equal(h.store.listGames().find((g) => g.appId === 10)?.receipt?.price.cents, 1234);
+});
+
+test('when the purchase history cannot be read the sync still finishes, on estimates', async () => {
+  const h = harness({ history: () => ({ body: '<html>Sign in to Steam</html>' }) });
+  withKeys(h);
+  const result = await runSync(h.deps);
+  assert.equal(result.ok, true, result.message);
+  assert.match(result.message, /Receipt prices were not updated: Steam did not show the purchase history/);
+  assert.equal(h.store.listGames().find((g) => g.appId === 10)?.receipt, null);
+  assert.equal(h.store.getEstimate(10)?.price?.cents, 1999, 'the estimate is still used');
+});
+
+test('a server error from the store is a note, not a failure', async () => {
+  const h = harness({ history: () => ({ status: 503 }) });
+  withKeys(h);
+  const result = await runSync(h.deps);
+  assert.equal(result.ok, true);
+  assert.match(result.message, /Receipt prices were not updated: The Steam store answered HTTP 503/);
+});
+
+test('receipts saved earlier still apply when this sync could not sign in to Steam', async () => {
+  const h = harness();
+  withKeys(h);
+  h.store.setMeta(META_STEAM_ID, STEAM_ID);
+  h.store.saveReceipts([
+    { transId: '501', date: BOUGHT, kind: 'purchase', typeLabel: 'Purchase', items: ['Bought Game'], listCents: 1499, discountPct: null, taxCents: 99, totalCents: 1234, symbol: '$' },
+  ]);
+  h.deps.openSteam = () =>
+    new SteamSession(() => new FakeSteamUser(steamScript((c) => c.emit('error', Object.assign(new Error('NoConnection'), { eresult: 3 })))), {
+      onRefreshToken: () => undefined,
+      onSteamGuard: async () => 'unused',
+    });
+  const offline = await runSync(h.deps);
+  assert.match(offline.message, /purchase dates were not updated/);
+  // No license date was read, so only the exact name can match; it does, from the saved receipt, with no web request.
+  assert.equal(h.store.listGames().find((g) => g.appId === 10)?.receipt?.price.cents, 1234);
+  assert.equal(h.fetch.calls.some((c) => c.url.startsWith('https://store.steampowered.com/')), false);
+});
+
+test('a receipt shared with an add-on is split, and a refund with no purchase behind it is ignored', async () => {
+  const h = harness({
+    history: () => ({
+      body: historyPage([
+        historyRow({ id: '503', date: 'Jun 4, 2021', items: ['Keyed Game', 'Refund'], type: 'Refund', total: '$5.00' }),
+        historyRow({ id: '502', date: 'Jun 1, 2021', items: ['Bought Game', 'Bought Game - Soundtrack'], base: ['-50%', '$20.00', '$10.00'], total: '$10.00' }),
+      ]),
+    }),
+  });
+  withKeys(h);
+  await runSync(h.deps);
+  const bought = h.store.listGames().find((g) => g.appId === 10);
+  assert.equal(bought?.receipt?.split, true);
+  assert.equal(bought?.receipt?.itemCount, 2);
+  assert.ok((bought?.receipt?.price.cents ?? 0) > 0 && (bought?.receipt?.price.cents ?? 0) < 1000, 'its share, not the whole receipt');
+  const valued = summarize(h.store.listGames()).ranked.find((g) => g.appId === 10);
+  assert.ok(valued?.flags.some((f) => /Shared receipt/.test(f)));
 });
 
 function withSteamFolder(h: Harness, read: SyncDeps['readSteamFolder']): void {

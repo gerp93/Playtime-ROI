@@ -18,7 +18,7 @@ export function hoursFromMinutes(minutes: number): number {
 export function mainCurrency(rows: GameRow[]): string {
   const counts = new Map<string, number>();
   for (const row of rows) {
-    const money = row.manualPrice ?? (row.estimate?.status === 'ok' ? row.estimate.price : null);
+    const money = row.manualPrice ?? row.receipt?.price ?? (row.estimate?.status === 'ok' ? row.estimate.price : null);
     if (!money) continue;
     counts.set(money.currency, (counts.get(money.currency) ?? 0) + 1);
   }
@@ -42,6 +42,11 @@ export function valueGame(row: GameRow, currency: string): ValuedGame {
   if (row.manualPrice) {
     counted = row.manualPrice;
     basis = 'manual';
+  } else if (row.receipt) {
+    // Steam's own record of the charge beats a guess, even for a game whose license looks free or gifted.
+    counted = row.receipt.price;
+    basis = 'receipt';
+    if (row.receipt.split) flags.push(`Shared receipt: its share of ${row.receipt.itemCount} items`);
   } else if (row.acquisition in ACQUIRED_FREE_LABEL) {
     counted = { cents: 0, currency };
     basis = 'zero';
@@ -113,6 +118,8 @@ export function summarize(rows: GameRow[]): DashboardSummary {
     neverPlayed,
     ranked,
     neverPlayedSpentCents,
+    receiptCount: valued.filter((g) => g.basis === 'receipt').length,
+    estimateCount: valued.filter((g) => g.basis === 'estimate').length,
     installedCount: valued.filter((g) => g.installed).length,
     installedBytes: valued.reduce((sum, g) => sum + (g.installed ? (g.sizeOnDiskBytes ?? 0) : 0), 0),
   };

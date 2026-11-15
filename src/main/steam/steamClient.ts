@@ -23,6 +23,17 @@ export interface SteamUserLike extends EventEmitter {
 
 export type SteamUserFactory = () => SteamUserLike;
 
+/**
+ * The cookies of a signed-in store.steampowered.com session. They are as good
+ * as the password for the web side of the account, so they live in memory for
+ * one sync only: never saved, logged or shown.
+ */
+export interface WebSession {
+  sessionId: string;
+  /** "name=value" pairs. */
+  cookies: string[];
+}
+
 export type LogOnDetails = { refreshToken: string } | { accountName: string; password: string };
 
 export interface SignedIn {
@@ -58,6 +69,7 @@ const AUTH_RESULTS = new Map<number, string>([
 ]);
 
 const LICENSE_WAIT_MS = 30000;
+const WEB_SESSION_WAIT_MS = 20000;
 const PACKAGE_BATCH = 200;
 
 export function createRealSteamUser(): SteamUserLike {
@@ -83,6 +95,7 @@ export class SteamSession {
   private readonly client: SteamUserLike;
   private signedIn: SignedIn | null = null;
   private cancelGuard: (() => void) | null = null;
+  private web: WebSession | null = null;
 
   constructor(
     factory: SteamUserFactory,
@@ -99,6 +112,30 @@ export class SteamSession {
     });
     // An unhandled 'error' event would crash the main process.
     this.client.on('error', () => undefined);
+    // steam-user asks Steam for the web cookies itself right after a sign-in
+    // with a token; keep the latest in case they arrive before they are wanted.
+    this.client.on('webSession', (sessionId: unknown, cookies: unknown) => {
+      if (typeof sessionId !== 'string' || !Array.isArray(cookies)) return;
+      this.web = { sessionId, cookies: cookies.filter((c): c is string => typeof c === 'string') };
+    });
+  }
+
+  /** The signed-in web session (for the purchase history); Steam sends it just after sign-in. */
+  async webSession(timeoutMs = WEB_SESSION_WAIT_MS): Promise<WebSession> {
+    if (this.web) return this.web;
+    return new Promise<WebSession>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.client.removeListener('webSession', onWeb);
+        reject(new Error('Steam did not give a web session.'));
+      }, timeoutMs);
+      const onWeb = () => {
+        clearTimeout(timer);
+        if (this.web) resolve(this.web);
+        else reject(new Error('Steam did not give a web session.'));
+      };
+      // Registered after the constructor's listener, so this.web is set by now.
+      this.client.once('webSession', onWeb);
+    });
   }
 
   signIn(details: LogOnDetails): Promise<SignedIn> {
@@ -195,6 +232,7 @@ export class SteamSession {
 
   close(): void {
     this.cancelGuard?.();
+    this.web = null;
     try {
       this.client.logOff();
     } catch {

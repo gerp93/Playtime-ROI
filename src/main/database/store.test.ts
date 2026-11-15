@@ -31,6 +31,35 @@ test('the library is replaced while manual prices stay', () => {
   store.close();
 });
 
+test('saved receipts keep their first reading, and the game each one paid for joins onto the games', () => {
+  const store = open();
+  const row = (transId: string, totalCents: number) => ({
+    transId,
+    date: 1700000000,
+    kind: 'purchase' as const,
+    typeLabel: 'Purchase',
+    items: ['A: "Game"', 'Add-on'],
+    listCents: 2000,
+    discountPct: 50,
+    taxCents: 80,
+    totalCents,
+    symbol: '$',
+  });
+  store.saveReceipts([row('1', 1000), row('2', 500)]);
+  store.saveReceipts([row('1', 9999)]);
+  assert.deepEqual(store.knownReceiptIds(), new Set(['1', '2']));
+  assert.deepEqual(store.listReceipts().find((r) => r.transId === '1'), row('1', 1000), 'a row is saved once, whole, and kept');
+
+  store.replaceGames([{ appId: 7, name: 'A: "Game"', playtimeMinutes: 60, lastPlayed: null }], 1);
+  assert.equal(store.listGames()[0].receipt, null);
+  store.replaceReceiptPrices([{ appId: 7, transId: '1', date: 1700000000, price: { cents: 600, currency: 'USD' }, split: true, itemCount: 2 }]);
+  assert.deepEqual(store.listGames()[0].receipt, { price: { cents: 600, currency: 'USD' }, date: 1700000000, split: true, itemCount: 2 });
+  store.replaceReceiptPrices([]);
+  assert.equal(store.listGames()[0].receipt, null, 'matching is redone each time, so a stale match goes away');
+  assert.deepEqual(store.listReceiptGames(), [{ appId: 7, name: 'A: "Game"', acquiredAt: null, regularCents: null }]);
+  store.close();
+});
+
 test('acquisitions and estimates join onto the games', () => {
   const store = open();
   store.replaceGames([{ appId: 1, name: 'G', playtimeMinutes: 60, lastPlayed: null }], 1);

@@ -34,8 +34,16 @@ in Settings > Steam folder. Without one, everything works as before.
 ## How the price is worked out
 
 - A price you type for a game always wins (Library, click the price).
+- Next comes what Steam's own **purchase history** says you were charged
+  (`store.steampowered.com/account/history`), tax included, shown as "paid".
+  The app reads it with the same Steam sign-in as the licenses, once per sync,
+  and only fetches rows it has not seen. A game is matched to its purchase by
+  name and by the day it came into your library. A purchase that covered
+  several things (a bundle, or a game and its add-ons) is shared out between
+  them by regular price and flagged; a refund takes its items back out.
 - Free games, gifts and Family Sharing count as nothing paid.
-- Otherwise the price is the Steam price IsThereAnyDeal recorded on or just
+- Otherwise (no receipt: an old purchase Steam no longer lists, a key bought
+  elsewhere, a gift) the price is the Steam price IsThereAnyDeal recorded on or just
   before the day the game came in, in your store country. It is marked as an
   estimate, and flagged when it is likely wrong: a key (you may have paid
   less), a bundle (the full single price is used), or a price recorded only

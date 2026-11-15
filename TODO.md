@@ -15,13 +15,18 @@ and its `REPO_SCOPE.md` for that). Just what's not built yet.
 - Steam Web API `GetOwnedGames` with a real key and a public profile.
 - License `time_created` as the purchase date, and the license kinds
   (key, gift, free, family) on a real account.
+- Purchase history on a real account: the web session from `steam-user`
+  (`webSession` cookies) and the "Load More Transactions" call
+  (`POST /account/AjaxLoadMoreHistory/`, cursor fields as the page's script
+  holds them). The row parser is checked against a saved page; the paging and
+  cookies are only tested against fakes.
 
 ## Features
 
-- Compare estimated prices with the Steam purchase receipts in mail (done by
-  hand for now, outside the app).
-- Split a bundle's price across its games instead of using each game's full
-  single price.
+- Purchase history: show which receipt a game's price came from, and let the
+  user fix a wrong name match by hand.
+- Split an ITAD-estimated bundle's price across its games instead of using
+  each game's full single price (receipt prices are already split).
 - More than one currency in the totals (today games priced in another
   currency are listed but left out of the total).
 

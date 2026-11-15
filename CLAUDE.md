@@ -26,13 +26,18 @@ npm run package     # electron-builder -> release/
 - `src/shared/` — pure logic, used by both processes and tested directly:
   `licenses.ts` (Steam licenses + package info -> when and how each app came
   in: bought / key / gift / free / family, bundles), `priceHistory.ts` (ITAD
-  history -> the price on or before a date), `value.ts` (cost per hour,
+  history -> the price on or before a date), `purchaseHistory.ts` (Steam's
+  purchase-history page HTML -> rows, and rows -> what each library game was
+  charged: name + license-date matching, refunds, shared receipts),
+  `value.ts` (cost per hour,
   rankings, totals, money formatting). Money is always whole cents.
 - `src/main/` — Electron main: `main.ts` (window, IPC, updater),
   `sync.ts` (one sync: Steam sign-in with the saved token -> licenses, Web API
   library + playtime, then price only what is new or changed),
   `steam/steamClient.ts` (`steam-user` behind `SteamUserLike`, so tests drive
-  a fake), `steam/webApi.ts` (`GetOwnedGames`), `itad.ts` (IsThereAnyDeal v2),
+  a fake; also hands out the store web session), `steam/purchaseHistory.ts`
+  (reads the purchase-history pages with that session, stopping at a row
+  already saved), `steam/webApi.ts` (`GetOwnedGames`), `itad.ts` (IsThereAnyDeal v2),
   `http.ts` (fetch with retry; errors never carry the URL, since keys are
   query parameters), `secrets.ts` (keys and the Steam refresh token,
   encrypted with `safeStorage`), `database/store.ts`, `dbLocation.ts`.
@@ -62,9 +67,23 @@ npm run package     # electron-builder -> release/
   contain no secret.
 - **An expired or refused token is removed** (`SteamAuthError`), but a
   network failure keeps it and syncs the library without new purchase dates.
+- **The store web cookies are a credential too.** They come from
+  `SteamSession.webSession()` each sync, are used for the purchase-history
+  requests and nowhere else, and are never saved, logged, shown or put in an
+  error (`http.ts` errors carry no URL; `sync.test.ts` checks the sync output).
+  The history is read-only: only `GET /account/history/` and the page's own
+  `POST /account/AjaxLoadMoreHistory/`.
+- **A receipt beats an estimate, but a receipt read is optional.** Priority is
+  manual > receipt > free/gift/family (zero) > ITAD estimate. Receipt prices
+  include tax (what was charged) and are shown as "paid"; a share of a
+  multi-item receipt is flagged. A failed history read only adds a note to the
+  sync message; the sync still finishes on estimates. Matching is redone from
+  the saved `receipts` every sync, so never cache a match across a library
+  change.
 - **Estimates are estimates.** A manual price beats the estimate; free, gift
   and family games count as zero; keys, bundles and prices recorded after the
-  purchase are flagged. Don't present an estimate as what was paid.
+  purchase are flagged. Don't present an estimate as what was paid. A game
+  with a receipt of its own is not looked up on ITAD at all.
 - **Prices are looked up once** per game, purchase date and country
   (`needsPricing`); a not-found is retried after 30 days and an error on the
   next sync. Don't re-query ITAD on every sync.
