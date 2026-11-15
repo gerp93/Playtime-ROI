@@ -11,6 +11,7 @@ import type { FetchLike, Sleep } from './http';
 import { acquisitionsByApp } from '../shared/licenses';
 import { priceOnDate } from '../shared/priceHistory';
 import type { SyncProgress, SyncResult } from '../shared/types';
+import type { LocalSteamInfo } from './steam/localFiles';
 
 /** Prices that found nothing are looked up again after this long, in case ITAD has added the game. */
 const RETRY_MISSING_AFTER_S = 30 * 24 * 3600;
@@ -27,10 +28,14 @@ export interface SyncDeps {
   sleep?: Sleep;
   onProgress?: (p: SyncProgress) => void;
   paymentNames?: Record<string, unknown>;
+  /** Reads the local Steam folder (installs and collections). When absent, the local data is left as it is. */
+  readSteamFolder?: (opts: { folder: string | null; steamId64: string }) => LocalSteamInfo;
 }
 
 export const META_LAST_SYNC = 'last_sync_at';
 export const META_STEAM_ID = 'steam_id64';
+export const META_STEAM_FOLDER = 'steam_folder';
+export const META_STEAM_STATUS = 'steam_folder_status';
 export const META_COUNTRY = 'country';
 export const DEFAULT_COUNTRY = 'US';
 
@@ -51,6 +56,29 @@ export function needsPricing(estimate: StoredEstimate | null, forDate: number, c
   if (estimate.status === 'error') return true;
   if (estimate.status !== 'ok' && now - estimate.lookedUpAt > RETRY_MISSING_AFTER_S) return true;
   return false;
+}
+
+/** The line Settings shows for the last read of the Steam folder. */
+export function steamFolderStatus(info: LocalSteamInfo, installedGames: number): string {
+  if (!info.found) return 'Steam folder not found.';
+  const libs = info.libraries.length;
+  return `Found ${libs} ${libs === 1 ? 'library' : 'libraries'} and ${installedGames} installed ${installedGames === 1 ? 'game' : 'games'}.`;
+}
+
+/** Reads the Steam folder and saves what it says. Read-only, and never lets a problem there fail the sync. */
+function readLocalSteam(deps: SyncDeps, steamId64: string): void {
+  if (!deps.readSteamFolder) return;
+  try {
+    const info = deps.readSteamFolder({ folder: deps.store.getMeta(META_STEAM_FOLDER), steamId64 });
+    deps.store.saveLocalSteam(info);
+    deps.store.setMeta(META_STEAM_STATUS, steamFolderStatus(info, deps.store.countInstalledGames()));
+  } catch {
+    try {
+      deps.store.setMeta(META_STEAM_STATUS, 'Could not read the Steam folder.');
+    } catch {
+      // The status line is a courtesy.
+    }
+  }
 }
 
 /** Reads the licenses through an open, signed-in Steam session and saves when each game came in. */
@@ -160,6 +188,7 @@ export async function runSync(deps: SyncDeps, signedInSession?: { session: Steam
       return result(deps, false, 'error', err instanceof Error ? err.message : 'Could not read the library.');
     }
     store.replaceGames(games, deps.now());
+    readLocalSteam(deps, steamId64);
 
     if (session && account) {
       try {

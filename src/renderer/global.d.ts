@@ -3,6 +3,7 @@ import type {
   CredentialStatus,
   DbLocationInfo,
   GameRow,
+  SteamFolderInfo,
   SteamGuardRequest,
   SyncProgress,
   SyncResult,
@@ -37,6 +38,11 @@ export interface PlaytimeRoiBridge {
   settings: {
     get: () => Promise<AppSettings>;
     setCountry: (country: string) => Promise<{ success: true }>;
+  };
+  steamFolder: {
+    get: () => Promise<SteamFolderInfo>;
+    browse: () => Promise<string | null>;
+    set: (folder: string | null) => Promise<{ success: true }>;
   };
   dbLocation: {
     get: () => Promise<DbLocationInfo>;

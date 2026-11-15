@@ -4,7 +4,7 @@ import * as path from 'path';
 import { Store } from './database/store';
 import { SecretStore } from './secrets';
 import { SteamSession } from './steam/steamClient';
-import { META_STEAM_ID, needsPricing, runSync, SyncDeps } from './sync';
+import { META_STEAM_FOLDER, META_STEAM_ID, META_STEAM_STATUS, needsPricing, runSync, SyncDeps } from './sync';
 import { Call, fakeFetch, fakeSafeStorage, FakeSteamScript, FakeSteamUser, noSleep, tempDir } from './testing/fakes';
 import { summarize } from '../shared/value';
 import type { SyncProgress } from '../shared/types';
@@ -221,4 +221,57 @@ test('a found-nothing estimate is retried only after a month, and a new date rep
   assert.equal(needsPricing({ ...base, status: 'ok', lookedUpAt: 0 }, 100, 'US', 400 * DAY), false);
   assert.equal(needsPricing({ ...base, status: 'ok', lookedUpAt: 0 }, 101, 'US', 0), true);
   assert.equal(needsPricing({ ...base, status: 'ok', lookedUpAt: 0 }, 100, 'GB', 0), true);
+});
+
+function withSteamFolder(h: Harness, read: SyncDeps['readSteamFolder']): void {
+  h.deps.readSteamFolder = read;
+  h.secrets.set('steamWebApiKey', 'WEBKEY');
+  h.secrets.set('itadApiKey', 'ITADKEY');
+  h.secrets.set('steamRefreshToken', 'tok');
+}
+
+test('the Steam folder is read on every sync, with its status saved', async () => {
+  const h = harness();
+  const seen: unknown[] = [];
+  withSteamFolder(h, (opts) => {
+    seen.push(opts);
+    return {
+      found: true,
+      libraries: ['/a', '/b'],
+      installs: new Map([[10, { libraryPath: '/a', sizeOnDisk: 99 }]]),
+      hidden: new Set([20]),
+      favorites: new Set(),
+    };
+  });
+  h.store.setMeta(META_STEAM_FOLDER, '/custom/steam');
+  const result = await runSync(h.deps);
+  assert.equal(result.ok, true, result.message);
+  assert.deepEqual(seen, [{ folder: '/custom/steam', steamId64: STEAM_ID }]);
+  assert.equal(h.store.getMeta(META_STEAM_STATUS), 'Found 2 libraries and 1 installed game.');
+  assert.equal(result.games, 2, 'a game set aside in Steam is not counted');
+  assert.equal(h.store.listGames().find((g) => g.appId === 10)?.installed, true);
+  assert.equal(h.store.getEstimate(20), null, 'and is not priced');
+});
+
+test('a Steam folder that is not found clears the local data and says so', async () => {
+  const h = harness();
+  withSteamFolder(h, () => ({ found: true, libraries: ['/a'], installs: new Map([[10, { libraryPath: '/a', sizeOnDisk: 1 }]]), hidden: new Set([20]), favorites: null }));
+  await runSync(h.deps);
+  h.deps.readSteamFolder = () => ({ found: false, libraries: [], installs: new Map(), hidden: null, favorites: null });
+  const result = await runSync(h.deps);
+  assert.equal(result.games, 3);
+  assert.equal(h.store.getMeta(META_STEAM_STATUS), 'Steam folder not found.');
+  assert.ok(h.store.listGames().every((g) => !g.installed));
+});
+
+test('a Steam folder that throws never fails the sync', async () => {
+  const h = harness();
+  withSteamFolder(h, () => {
+    throw new Error('locked');
+  });
+  const result = await runSync(h.deps);
+  assert.equal(result.ok, true, result.message);
+  assert.equal(result.games, 3);
+  assert.equal(result.pricesLookedUp, 2);
+  assert.equal(h.store.getMeta(META_STEAM_STATUS), 'Could not read the Steam folder.');
 });

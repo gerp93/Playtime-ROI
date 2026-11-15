@@ -23,6 +23,14 @@ Steam sign-in token saved encrypted with the operating system's own key store
   account. The password is used once and never saved; only the sign-in token
   Steam hands back is kept, encrypted. Sign out in Settings removes it.
 
+## Steam folder (optional)
+
+On every sync the app also reads your local Steam folder to show which games
+are installed, on which drive and how much space they take, and which are in
+your Favourites. It only reads: nothing in the Steam folder is ever changed.
+The folder is found automatically; if Steam lives somewhere unusual, choose it
+in Settings > Steam folder. Without one, everything works as before.
+
 ## How the price is worked out
 
 - A price you type for a game always wins (Library, click the price).

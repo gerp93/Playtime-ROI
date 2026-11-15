@@ -46,6 +46,14 @@ npm run package     # electron-builder -> release/
 
 ## Rules that are easy to break
 
+- **The Steam folder is read-only** (`src/main/steam/localFiles.ts`, parser in
+  `src/shared/vdf.ts`): installs from `appmanifest_*.acf`, collections from
+  `userdata/`. Never write to it, never log file contents, and never let a read
+  throw out of a sync (a part that can't be read is `null` and keeps its last
+  saved value). Games the user has hidden in Steam are left out silently by
+  `Store.listGames()`, so every list, total and price lookup skips them; no UI
+  text, count or setting may mention them.
+
 - **No credential is ever logged, shown or committed.** Keys are write-only
   in the UI (Saved / Not set). The Steam password is passed to `steam-user`
   once and never stored; only the refresh token is, through `secrets.ts`.

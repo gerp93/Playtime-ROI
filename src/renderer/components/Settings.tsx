@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { CredentialStatus, DbLocationInfo, SyncResult, UpdateCheckResult } from '../../shared/types';
+import type { CredentialStatus, DbLocationInfo, SteamFolderInfo, SyncResult, UpdateCheckResult } from '../../shared/types';
 import type { ApiKeyName, LinkName } from '../global';
 import { applyTheme, AVAILABLE_THEMES, DEFAULT_THEME, getStoredTheme, saveTheme, Theme, THEME_LABELS } from '../utils/themes';
 
@@ -73,6 +73,8 @@ export default function Settings({ credentials, syncing, onChanged, onSignIn, on
   const [countryMessage, setCountryMessage] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>(getStoredTheme() ?? DEFAULT_THEME);
   const [db, setDb] = useState<DbLocationInfo | null>(null);
+  const [steamFolder, setSteamFolder] = useState<SteamFolderInfo | null>(null);
+  const [steamFolderError, setSteamFolderError] = useState<string | null>(null);
   const [version, setVersion] = useState('');
   const [update, setUpdate] = useState<UpdateCheckResult | null>(null);
 
@@ -81,6 +83,21 @@ export default function Settings({ credentials, syncing, onChanged, onSignIn, on
     void api.dbLocation.get().then(setDb);
     void api.app.getVersion().then(setVersion);
   }, [api]);
+
+  // The status line comes from the last sync, so read it again when one finishes.
+  useEffect(() => {
+    if (!syncing) void api.steamFolder.get().then(setSteamFolder);
+  }, [api, syncing]);
+
+  const changeSteamFolder = async (folder: string | null) => {
+    try {
+      setSteamFolderError(null);
+      await api.steamFolder.set(folder);
+      setSteamFolder(await api.steamFolder.get());
+    } catch (err) {
+      setSteamFolderError(err instanceof Error ? err.message : 'Not saved.');
+    }
+  };
 
   const moveDb = async (pick: () => Promise<string | null>) => {
     const chosen = await pick();
@@ -163,6 +180,35 @@ export default function Settings({ credentials, syncing, onChanged, onSignIn, on
           </div>
           {countryMessage && <p className="muted">{countryMessage}</p>}
         </div>
+      </section>
+
+      <section className="panel">
+        <h2>Steam folder</h2>
+        <p className="muted">Read-only. Used to show which games are installed, where, and how big. It is optional and read again on every sync.</p>
+        {steamFolder && (
+          <>
+            <p className="mono">{steamFolder.path ?? 'No Steam folder found'}</p>
+            <p className="muted">
+              {steamFolder.isDefault ? 'Default location' : 'Custom location'}
+              {steamFolder.status ? ` · ${steamFolder.status}` : ''}
+            </p>
+          </>
+        )}
+        <div className="row-actions">
+          <button
+            onClick={async () => {
+              const chosen = await api.steamFolder.browse();
+              if (chosen) await changeSteamFolder(chosen);
+            }}
+          >
+            Browse…
+          </button>
+          {steamFolder && !steamFolder.isDefault && <button onClick={() => void changeSteamFolder(null)}>Use default</button>}
+          <button disabled={syncing} onClick={() => void onSync()}>
+            Sync now
+          </button>
+        </div>
+        {steamFolderError && <p className="warn-text">{steamFolderError}</p>}
       </section>
 
       <section className="panel">

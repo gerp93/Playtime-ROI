@@ -16,9 +16,10 @@ import { setupApplicationMenu, attachContextMenu } from './menu';
 import { Store } from './database/store';
 import { SecretStore } from './secrets';
 import { SteamSession, createRealSteamUser, paymentMethodNames, SteamAuthError, SteamCancelledError } from './steam/steamClient';
-import { runSync, getCountry, META_COUNTRY, META_LAST_SYNC, SyncDeps } from './sync';
+import { runSync, getCountry, META_COUNTRY, META_LAST_SYNC, META_STEAM_FOLDER, META_STEAM_STATUS, SyncDeps } from './sync';
+import { defaultSteamFolder, readLocalSteam } from './steam/localFiles';
 import type { FetchLike } from './http';
-import type { CredentialStatus, SteamGuardRequest, SyncResult, UpdateCheckResult } from '../shared/types';
+import type { CredentialStatus, SteamFolderInfo, SteamGuardRequest, SyncResult, UpdateCheckResult } from '../shared/types';
 
 pinUserDataPath();
 app.setName('playtime-roi');
@@ -189,6 +190,7 @@ function syncDeps(): SyncDeps {
     now: () => Math.floor(Date.now() / 1000),
     onProgress: (p) => mainWindow?.webContents.send('sync:progress', p),
     paymentNames: paymentMethodNames(),
+    readSteamFolder: ({ folder, steamId64 }) => readLocalSteam({ folder, steamId64 }),
   };
 }
 
@@ -297,6 +299,25 @@ function registerIPCHandlers() {
     const c = String(country ?? '').trim().toUpperCase();
     if (!/^[A-Z]{2}$/.test(c)) throw new Error('A country is a two-letter code like US.');
     store?.setMeta(META_COUNTRY, c);
+    return { success: true };
+  });
+
+  handle('steamFolder:get', (): SteamFolderInfo => {
+    const chosen = store?.getMeta(META_STEAM_FOLDER) ?? null;
+    return { path: chosen ?? defaultSteamFolder(), isDefault: chosen == null, status: store?.getMeta(META_STEAM_STATUS) ?? null };
+  });
+  handle('steamFolder:browse', async () => {
+    if (!mainWindow) return null;
+    const r = await dialog.showOpenDialog(mainWindow, { title: 'Choose your Steam folder', properties: ['openDirectory'] });
+    return r.canceled ? null : r.filePaths[0];
+  });
+  handle('steamFolder:set', (folder: unknown) => {
+    if (folder == null) {
+      store?.setMeta(META_STEAM_FOLDER, null);
+      return { success: true };
+    }
+    if (typeof folder !== 'string' || folder.trim() === '' || !path.isAbsolute(folder.trim())) throw new Error('Choose a full folder path.');
+    store?.setMeta(META_STEAM_FOLDER, folder.trim());
     return { success: true };
   });
 

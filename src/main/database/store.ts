@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { AcquisitionKind, GameRow, Money, PriceEstimate, PriceMatch, PriceStatus } from '../../shared/types';
 import type { AppAcquisition } from '../../shared/licenses';
+import { installDriveOf, LocalSteamInfo } from '../steam/localFiles';
 
 export interface OwnedGame {
   appId: number;
@@ -58,6 +59,16 @@ CREATE TABLE IF NOT EXISTS manual_prices (
   cents INTEGER NOT NULL,
   currency TEXT NOT NULL,
   updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS local_installs (
+  app_id INTEGER PRIMARY KEY,
+  library_path TEXT NOT NULL,
+  size_on_disk INTEGER
+);
+CREATE TABLE IF NOT EXISTS local_flags (
+  app_id INTEGER PRIMARY KEY,
+  hidden INTEGER NOT NULL DEFAULT 0,
+  favorite INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
@@ -151,6 +162,40 @@ export class Store {
     });
   }
 
+  /**
+   * Saves what the Steam folder said. A folder that was not found clears all of
+   * it; otherwise installs are replaced, and each collection is replaced only
+   * when it was read (null keeps the last saved one).
+   */
+  saveLocalSteam(info: LocalSteamInfo): void {
+    this.transaction(() => {
+      if (!info.found) {
+        this.db.exec('DELETE FROM local_installs');
+        this.db.exec('DELETE FROM local_flags');
+        return;
+      }
+      this.db.exec('DELETE FROM local_installs');
+      const insert = this.db.prepare('INSERT INTO local_installs (app_id, library_path, size_on_disk) VALUES (?, ?, ?)');
+      for (const [appId, i] of info.installs) insert.run(appId, i.libraryPath, i.sizeOnDisk);
+      if (info.hidden) this.replaceFlag('hidden', info.hidden);
+      if (info.favorites) this.replaceFlag('favorite', info.favorites);
+      this.db.exec('DELETE FROM local_flags WHERE hidden = 0 AND favorite = 0');
+    });
+  }
+
+  private replaceFlag(column: 'hidden' | 'favorite', ids: Set<number>): void {
+    this.db.exec(`UPDATE local_flags SET ${column} = 0`);
+    const upsert = this.db.prepare(
+      `INSERT INTO local_flags (app_id, ${column}) VALUES (?, 1) ON CONFLICT(app_id) DO UPDATE SET ${column} = 1`
+    );
+    for (const id of ids) upsert.run(id);
+  }
+
+  /** How many of the (listed) games are installed. */
+  countInstalledGames(): number {
+    return this.listGames().filter((g) => g.installed).length;
+  }
+
   hasAcquisitions(): boolean {
     const row = this.db.prepare('SELECT COUNT(*) AS n FROM acquisitions').get() as Row;
     return Number(row.n) > 0;
@@ -204,6 +249,7 @@ export class Store {
       .run(appId, price.cents, price.currency, now);
   }
 
+  /** Games the user has set aside in Steam are left out here, so every figure and list skips them without saying so. */
   listGames(): GameRow[] {
     const rows = this.db
       .prepare(
@@ -211,11 +257,15 @@ export class Store {
            a.acquired_at, a.kind, a.payment_method, a.package_id, a.bundle, a.bundle_size,
            m.cents AS manual_cents, m.currency AS manual_currency,
            p.app_id AS p_app_id, p.for_date, p.country, p.status, p.price_cents, p.price_currency, p.regular_cents,
-           p.regular_currency, p.cut, p.recorded_at, p.match, p.looked_up_at, p.error
+           p.regular_currency, p.cut, p.recorded_at, p.match, p.looked_up_at, p.error,
+           i.library_path, i.size_on_disk, COALESCE(f.favorite, 0) AS favorite
          FROM games g
          LEFT JOIN acquisitions a ON a.app_id = g.app_id
          LEFT JOIN manual_prices m ON m.app_id = g.app_id
          LEFT JOIN price_estimates p ON p.app_id = g.app_id
+         LEFT JOIN local_installs i ON i.app_id = g.app_id
+         LEFT JOIN local_flags f ON f.app_id = g.app_id
+         WHERE COALESCE(f.hidden, 0) = 0
          ORDER BY g.name COLLATE NOCASE`
       )
       .all() as Row[];
@@ -232,6 +282,10 @@ export class Store {
       bundleSize: Number(row.bundle_size ?? 1),
       estimate: row.p_app_id == null ? null : this.toEstimate(row),
       manualPrice: money(row.manual_cents, row.manual_currency),
+      installed: row.library_path != null,
+      installDrive: row.library_path == null ? null : installDriveOf(String(row.library_path)),
+      sizeOnDiskBytes: row.library_path == null ? null : num(row.size_on_disk),
+      favorite: Number(row.favorite ?? 0) === 1,
     }));
   }
 

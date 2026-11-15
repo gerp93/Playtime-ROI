@@ -63,6 +63,13 @@ export interface GameRow {
   estimate: PriceEstimate | null;
   /** A price the user typed in, which always wins over the estimate. */
   manualPrice: Money | null;
+  /** True when the game is fully installed in a Steam library on this computer. */
+  installed: boolean;
+  /** The drive ("D:") of the library it is installed in, or the library's path off Windows. */
+  installDrive: string | null;
+  sizeOnDiskBytes: number | null;
+  /** True when it is in the user's Favourites collection in Steam. */
+  favorite: boolean;
 }
 
 export type CountedPriceBasis =
@@ -100,6 +107,9 @@ export interface DashboardSummary {
   ranked: ValuedGame[];
   /** Cents of counted spend on games never played. */
   neverPlayedSpentCents: number;
+  /** Games installed on this computer, and their size together; 0 without a Steam folder. */
+  installedCount: number;
+  installedBytes: number;
 }
 
 export type SyncPhase =
@@ -146,6 +156,14 @@ export interface SteamGuardRequest {
   /** The email domain a code was sent to, or null for the Steam Mobile app. */
   domain: string | null;
   lastCodeWrong: boolean;
+}
+
+export interface SteamFolderInfo {
+  /** The folder in use, or null when none is set and no usual place has Steam. */
+  path: string | null;
+  isDefault: boolean;
+  /** What the last sync found, e.g. "Found 2 libraries and 143 installed games." */
+  status: string | null;
 }
 
 export interface DbLocationInfo {

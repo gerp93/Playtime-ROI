@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'path';
 import { Store } from './store';
+import { DatabaseSync } from 'node:sqlite';
+import type { LocalSteamInfo } from '../steam/localFiles';
 import { tempDir } from '../testing/fakes';
 
 function open(): Store {
@@ -77,4 +79,81 @@ test('the data survives closing and reopening', () => {
   const b = new Store(file);
   assert.equal(b.listGames()[0].name, 'Kept');
   b.close();
+});
+
+function libraryOf(store: Store): void {
+  store.replaceGames(
+    [
+      { appId: 1, name: 'A', playtimeMinutes: 0, lastPlayed: null },
+      { appId: 2, name: 'B', playtimeMinutes: 0, lastPlayed: null },
+      { appId: 3, name: 'C', playtimeMinutes: 0, lastPlayed: null },
+    ],
+    1
+  );
+}
+
+function localInfo(over: Partial<LocalSteamInfo> = {}): LocalSteamInfo {
+  return {
+    found: true,
+    libraries: ['D:\\SteamLibrary'],
+    installs: new Map([[1, { libraryPath: 'D:\\SteamLibrary', sizeOnDisk: 4096 }]]),
+    hidden: new Set([2]),
+    favorites: new Set([3]),
+    ...over,
+  };
+}
+
+test('local installs and favourites join onto games, and games set aside are left out of the list', () => {
+  const store = open();
+  libraryOf(store);
+  store.saveLocalSteam(localInfo());
+  const games = store.listGames();
+  assert.deepEqual(games.map((g) => g.appId), [1, 3]);
+  assert.equal(games[0].installed, true);
+  assert.equal(games[0].installDrive, 'D:');
+  assert.equal(games[0].sizeOnDiskBytes, 4096);
+  assert.equal(games[1].installed, false);
+  assert.equal(games[1].installDrive, null);
+  assert.equal(games[1].favorite, true);
+  assert.equal(store.countInstalledGames(), 1);
+  store.close();
+});
+
+test('a collection that could not be read keeps its last saved values', () => {
+  const store = open();
+  libraryOf(store);
+  store.saveLocalSteam(localInfo());
+  store.saveLocalSteam(localInfo({ hidden: null, favorites: new Set([1]), installs: new Map() }));
+  const games = store.listGames();
+  assert.deepEqual(games.map((g) => g.appId), [1, 3], 'the earlier set stays');
+  assert.equal(games[0].favorite, true);
+  assert.equal(games[1].favorite, false);
+  assert.equal(games[0].installed, false, 'installs are always replaced');
+  store.saveLocalSteam(localInfo({ hidden: new Set(), favorites: new Set() }));
+  assert.deepEqual(store.listGames().map((g) => g.appId), [1, 2, 3]);
+  store.close();
+});
+
+test('a Steam folder that is not found clears everything local', () => {
+  const store = open();
+  libraryOf(store);
+  store.saveLocalSteam(localInfo());
+  store.saveLocalSteam({ found: false, libraries: [], installs: new Map(), hidden: null, favorites: null });
+  const games = store.listGames();
+  assert.equal(games.length, 3);
+  assert.ok(games.every((g) => !g.installed && !g.favorite && g.installDrive === null));
+  store.close();
+});
+
+test('a database made before the local tables gets them when opened', () => {
+  const file = path.join(tempDir(), 'old.db');
+  const old = new DatabaseSync(file);
+  old.exec('CREATE TABLE games (app_id INTEGER PRIMARY KEY, name TEXT NOT NULL, playtime_minutes INTEGER NOT NULL DEFAULT 0, last_played INTEGER, updated_at INTEGER NOT NULL);');
+  old.exec("INSERT INTO games VALUES (1, 'Old', 60, NULL, 1);");
+  old.close();
+  const store = new Store(file);
+  const games = store.listGames();
+  assert.equal(games.length, 1);
+  assert.equal(games[0].installed, false);
+  store.close();
 });
